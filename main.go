@@ -1,8 +1,12 @@
 package main
 
 import (
+	"archive/zip"
+	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/csv"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +24,10 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/xuri/excelize/v2"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -35,6 +42,13 @@ var (
 	goodLog *os.File
 	badLog  *os.File
 )
+
+func resetCounters() {
+	totalImages = 0
+	successImages = 0
+	failImages = 0
+	extCounts = make(map[string]int)
+}
 
 func main() {
 	// Create a cookie jar for the global client
@@ -75,7 +89,7 @@ func main() {
 	defer badLog.Close()
 
 	myApp := app.New()
-	myWindow := myApp.NewWindow("Google Spreadsheet Image Downloader")
+	myWindow := myApp.NewWindow("Spreadsheet Image Downloader (URL or Local)")
 
 	urlEntry := widget.NewEntry()
 	urlEntry.SetPlaceHolder("Enter Google Spreadsheet URL")
@@ -89,8 +103,9 @@ func main() {
 	imageCacheText := widget.NewMultiLineEntry()
 	imageCacheText.SetPlaceHolder("New image_cache content will appear here")
 
-	downloadButton := widget.NewButton("Download Images", func() {
+	downloadButton := widget.NewButton("Download Images from Google Sheet URL", func() {
 		go func() {
+			resetCounters()
 			spreadsheetURL := urlEntry.Text
 			if spreadsheetURL == "" {
 				showError(myWindow, errors.New("Please enter a URL"))
@@ -112,33 +127,67 @@ func main() {
 				return
 			}
 
-			statusLabel.SetText("Status: Checking existing images...")
-			if dirExists("products") {
-				dialog.ShowConfirm("Directory Exists",
-					`"products" directory already exists. Do you want to delete it and proceed?`,
-					func(b bool) {
-						if b {
-							err := os.RemoveAll("products")
-							if err != nil {
-								showError(myWindow, fmt.Errorf("Failed to delete 'products' directory: %v", err))
-								return
-							}
-							continueProcessing(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
-						} else {
-							statusLabel.SetText("Status: Operation Aborted")
-							showError(myWindow, fmt.Errorf("'products' directory exists, aborting ..."))
-							return
-						}
-					}, myWindow)
-			} else {
-				continueProcessing(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
-			}
+			handleProductsDirAndProcess(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
 		}()
+	})
+
+	processLocalButton := widget.NewButton("Process Local Table (CSV/XLSX/ODS)", func() {
+		fd := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err != nil {
+				showError(myWindow, err)
+				return
+			}
+			if r == nil {
+				// user cancelled
+				return
+			}
+			defer r.Close()
+
+			resetCounters()
+			uri := r.URI()
+			if uri == nil {
+				showError(myWindow, errors.New("invalid file URI"))
+				return
+			}
+
+			path := uri.Path()
+			if path == "" && strings.HasPrefix(uri.String(), "file://") {
+				path = strings.TrimPrefix(uri.String(), "file://")
+			}
+			if path == "" {
+				// Fallback: read the stream to a temp file
+				tmpf, tmpErr := os.CreateTemp("", "local_table_*")
+				if tmpErr != nil {
+					showError(myWindow, fmt.Errorf("failed to create temp file: %v", tmpErr))
+					return
+				}
+				defer tmpf.Close()
+
+				if _, copyErr := io.Copy(tmpf, r); copyErr != nil {
+					showError(myWindow, fmt.Errorf("failed to copy file content: %v", copyErr))
+					return
+				}
+				path = tmpf.Name()
+			}
+
+			statusLabel.SetText("Status: Loading local table...")
+			records, lerr := loadLocalTable(path)
+			if lerr != nil {
+				showError(myWindow, lerr)
+				statusLabel.SetText("Status: Idle")
+				return
+			}
+
+			handleProductsDirAndProcess(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
+		}, myWindow)
+
+		fd.SetFilter(storage.NewExtensionFileFilter([]string{".csv", ".xlsx", ".ods"}))
+		fd.Show()
 	})
 
 	content := container.NewVBox(
 		urlEntry,
-		downloadButton,
+		container.NewHBox(downloadButton, processLocalButton),
 		progressBar,
 		statusLabel,
 		widget.NewLabel("New main_image Data:"),
@@ -148,8 +197,32 @@ func main() {
 	)
 
 	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(800, 600))
+	myWindow.Resize(fyne.NewSize(900, 650))
 	myWindow.ShowAndRun()
+}
+
+func handleProductsDirAndProcess(records [][]string, statusLabel *widget.Label, progressBar *widget.ProgressBar, mainImageText, imageCacheText *widget.Entry, myWindow fyne.Window) {
+	statusLabel.SetText("Status: Checking existing images...")
+	if dirExists("products") {
+		dialog.ShowConfirm("Directory Exists",
+			`"products" directory already exists. Do you want to delete it and proceed?`,
+			func(b bool) {
+				if b {
+					err := os.RemoveAll("products")
+					if err != nil {
+						showError(myWindow, fmt.Errorf("Failed to delete 'products' directory: %v", err))
+						return
+					}
+					continueProcessing(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
+				} else {
+					statusLabel.SetText("Status: Operation Aborted")
+					showError(myWindow, fmt.Errorf("'products' directory exists, aborting ..."))
+					return
+				}
+			}, myWindow)
+	} else {
+		continueProcessing(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
+	}
 }
 
 func getCSVURL(spreadsheetURL string) (string, error) {
@@ -185,7 +258,6 @@ func getCSVURL(spreadsheetURL string) (string, error) {
 	}
 
 	csvURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/export?format=csv&gid=%s", spreadsheetID, gid)
-
 	return csvURL, nil
 }
 
@@ -210,19 +282,249 @@ func fetchCSV(csvURL string) ([][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return records, nil
 }
 
+/* ========================= Local table loaders ========================= */
+
+func loadLocalTable(path string) ([][]string, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".csv":
+		return readCSVFile(path)
+	case ".xlsx":
+		return readXLSXFile(path)
+	case ".ods":
+		return readODSFile(path)
+	default:
+		return nil, fmt.Errorf("unsupported file type: %s (use .csv, .xlsx, or .ods)", filepath.Ext(path))
+	}
+}
+
+func readCSVFile(path string) ([][]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Peek first line to detect delimiter , vs ;
+	br := bufio.NewReader(f)
+	firstLine, err := br.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	comma := ','
+	if strings.Count(firstLine, ";") > strings.Count(firstLine, ",") {
+		comma = ';'
+	}
+
+	// Stitch the first line back to the reader
+	r := csv.NewReader(io.MultiReader(strings.NewReader(firstLine), br))
+	r.Comma = comma
+
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	return trimEmptyRows(records), nil
+}
+
+func readXLSXFile(path string) ([][]string, error) {
+	f, err := excelize.OpenFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	sheets := f.GetSheetList()
+	if len(sheets) == 0 {
+		return nil, errors.New("xlsx has no sheets")
+	}
+	rows, err := f.GetRows(sheets[0])
+	if err != nil {
+		return nil, err
+	}
+	return trimEmptyRows(rows), nil
+}
+
+/* ------------------------- ODS reader ------------------------- */
+func readODSFile(path string) ([][]string, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open ods (zip): %w", err)
+	}
+	defer zr.Close()
+
+	var content io.ReadCloser
+	for _, zf := range zr.File {
+		if zf.Name == "content.xml" {
+			rc, err := zf.Open()
+			if err != nil {
+				return nil, fmt.Errorf("failed to open content.xml: %w", err)
+			}
+			content = rc
+			break
+		}
+	}
+	if content == nil {
+		return nil, errors.New("content.xml not found in ODS")
+	}
+	defer content.Close()
+
+	dec := xml.NewDecoder(content)
+	var (
+		inTable   bool
+		inRow     bool
+		rows      [][]string
+		curRow    []string
+		tableDone bool
+	)
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("xml decode error: %w", err)
+		}
+
+		switch se := tok.(type) {
+		case xml.StartElement:
+			switch se.Name.Local {
+			case "table": // <table:table>
+				if !inTable {
+					inTable = true
+				}
+			case "table-row": // <table:table-row>
+				if inTable {
+					inRow = true
+					curRow = []string{}
+				}
+			case "table-cell": // <table:table-cell>
+				if inTable && inRow {
+					repeat := parseRepeatAttr(se.Attr)
+					val, err := readODSCellText(dec)
+					if err != nil {
+						return nil, err
+					}
+					val = strings.TrimSpace(val)
+					for i := 0; i < repeat; i++ {
+						curRow = append(curRow, val)
+					}
+				}
+			case "covered-table-cell": // merged cells continuation
+				if inTable && inRow {
+					repeat := parseRepeatAttr(se.Attr)
+					for i := 0; i < repeat; i++ {
+						curRow = append(curRow, "")
+					}
+				}
+			}
+		case xml.EndElement:
+			switch se.Name.Local {
+			case "table-row":
+				if inTable && inRow {
+					rows = append(rows, curRow)
+					inRow = false
+				}
+			case "table":
+				if inTable {
+					inTable = false
+					tableDone = true
+				}
+			}
+		}
+		if tableDone {
+			break // Only first table
+		}
+	}
+
+	if len(rows) == 0 {
+		return nil, errors.New("no table rows found in ODS")
+	}
+	return trimEmptyRows(rows), nil
+}
+
+func parseRepeatAttr(attrs []xml.Attr) int {
+	repeat := 1
+	for _, a := range attrs {
+		if a.Name.Local == "number-columns-repeated" {
+			if n, err := strconv.Atoi(a.Value); err == nil && n > 1 {
+				repeat = n
+			}
+		}
+	}
+	return repeat
+}
+
+// readODSCellText consumes tokens inside the current <table:table-cell>
+// and concatenates all textual content, handling text:s (spaces) and line breaks.
+func readODSCellText(dec *xml.Decoder) (string, error) {
+	var buf bytes.Buffer
+	depth := 1 // already inside <table-cell>
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			// handle <text:s text:c="N"/> → N spaces (default 1)
+			if t.Name.Local == "s" {
+				n := 1
+				for _, a := range t.Attr {
+					if a.Name.Local == "c" {
+						if v, err := strconv.Atoi(a.Value); err == nil && v > 0 {
+							n = v
+						}
+					}
+				}
+				buf.WriteString(strings.Repeat(" ", n))
+			}
+			// optional: <text:line-break/>
+			if t.Name.Local == "line-break" {
+				buf.WriteString("\n")
+			}
+		case xml.EndElement:
+			depth--
+		case xml.CharData:
+			buf.Write(t)
+		}
+	}
+	return buf.String(), nil
+}
+
+func trimEmptyRows(rows [][]string) [][]string {
+	var out [][]string
+	for _, r := range rows {
+		keep := false
+		for _, c := range r {
+			if strings.TrimSpace(c) != "" {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+/* ========================= Processing ========================= */
+
 func processRecords(records [][]string, progressBar *widget.ProgressBar, statusLabel *widget.Label, mainImageText, imageCacheText *widget.Entry) error {
 	if len(records) < 2 {
-		return errors.New("No data in CSV")
+		return errors.New("No data in table (need header + at least 1 row)")
 	}
 
 	headers := records[0]
 	headerMap := make(map[string]int)
 	for i, h := range headers {
-		headerMap[h] = i
+		headerMap[strings.TrimSpace(h)] = i
 	}
 
 	requiredColumns := []string{"main_image", "image_cache", "brand_seo_url"}
@@ -256,15 +558,14 @@ func processRecords(records [][]string, progressBar *widget.ProgressBar, statusL
 		// 	Title:   "Processing",
 		// 	Content: fmt.Sprintf("Processing row %d/%d", rowIndex+1, totalRows),
 		// })
-
-		mainImageURL := row[headerMap["main_image"]]
-		imageCacheURLs := row[headerMap["image_cache"]]
-		brandSEOURL := row[headerMap["brand_seo_url"]]
-		seoURL := row[headerMap[seoURLColumn]]
+		mainImageURL := safeIndex(row, headerMap["main_image"])
+		imageCacheURLs := safeIndex(row, headerMap["image_cache"])
+		brandSEOURL := safeIndex(row, headerMap["brand_seo_url"])
+		seoURL := safeIndex(row, headerMap[seoURLColumn])
 
 		// Default to old values
-		newMainImagePath := row[headerMap["main_image"]]
-		newImageCachePath := row[headerMap["image_cache"]]
+		newMainImagePath := mainImageURL
+		newImageCachePath := imageCacheURLs
 
 		// Process main_image if it's a valid URL
 		if isValidImageURL(mainImageURL) {
@@ -280,7 +581,7 @@ func processRecords(records [][]string, progressBar *widget.ProgressBar, statusL
 				newMainImagePath = mpath
 				logSuccess(fmt.Sprintf("MAIN IMAGE OK (row %d): %s -> %s", rowIndex+2, mainImageURL, mpath))
 			}
-		} else {
+		} else if strings.TrimSpace(mainImageURL) != "" {
 			logFailure(fmt.Sprintf("MAIN IMAGE FAIL (row %d): %s is not a valid URL", rowIndex+2, mainImageURL))
 		}
 
@@ -357,6 +658,13 @@ func processRecords(records [][]string, progressBar *widget.ProgressBar, statusL
 	writeDataToFile(imageCacheData, "image_cache.txt")
 
 	return nil
+}
+
+func safeIndex(row []string, idx int) string {
+	if idx >= 0 && idx < len(row) {
+		return row[idx]
+	}
+	return ""
 }
 
 func continueProcessing(records [][]string, statusLabel *widget.Label, progressBar *widget.ProgressBar, mainImageText, imageCacheText *widget.Entry, myWindow fyne.Window) {
