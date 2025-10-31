@@ -23,10 +23,10 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/storage"
+	fdialog "fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	sdialog "github.com/sqweek/dialog"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/net/publicsuffix"
 )
@@ -132,42 +132,25 @@ func main() {
 	})
 
 	processLocalButton := widget.NewButton("Process Local Table (CSV/XLSX/ODS)", func() {
-		fd := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
-			if err != nil {
-				showError(myWindow, err)
-				return
-			}
-			if r == nil {
-				// user cancelled
-				return
-			}
-			defer r.Close()
-
+		go func() {
 			resetCounters()
-			uri := r.URI()
-			if uri == nil {
-				showError(myWindow, errors.New("invalid file URI"))
+
+			// Native OS file dialog
+			path, err := sdialog.
+				File().
+				Filter("Spreadsheets", "csv", "xlsx", "ods").
+				Title("Select local table (CSV, XLSX, or ODS)").
+				Load()
+			if err != nil {
+				// user cancelled or backend not available
+				// Only show error if it's not a typical cancel
+				if !strings.Contains(strings.ToLower(err.Error()), "cancel") {
+					showError(myWindow, fmt.Errorf("failed to open native file dialog: %v", err))
+				}
 				return
 			}
-
-			path := uri.Path()
-			if path == "" && strings.HasPrefix(uri.String(), "file://") {
-				path = strings.TrimPrefix(uri.String(), "file://")
-			}
-			if path == "" {
-				// Fallback: read the stream to a temp file
-				tmpf, tmpErr := os.CreateTemp("", "local_table_*")
-				if tmpErr != nil {
-					showError(myWindow, fmt.Errorf("failed to create temp file: %v", tmpErr))
-					return
-				}
-				defer tmpf.Close()
-
-				if _, copyErr := io.Copy(tmpf, r); copyErr != nil {
-					showError(myWindow, fmt.Errorf("failed to copy file content: %v", copyErr))
-					return
-				}
-				path = tmpf.Name()
+			if strings.TrimSpace(path) == "" {
+				return
 			}
 
 			statusLabel.SetText("Status: Loading local table...")
@@ -179,10 +162,7 @@ func main() {
 			}
 
 			handleProductsDirAndProcess(records, statusLabel, progressBar, mainImageText, imageCacheText, myWindow)
-		}, myWindow)
-
-		fd.SetFilter(storage.NewExtensionFileFilter([]string{".csv", ".xlsx", ".ods"}))
-		fd.Show()
+		}()
 	})
 
 	content := container.NewVBox(
@@ -204,7 +184,7 @@ func main() {
 func handleProductsDirAndProcess(records [][]string, statusLabel *widget.Label, progressBar *widget.ProgressBar, mainImageText, imageCacheText *widget.Entry, myWindow fyne.Window) {
 	statusLabel.SetText("Status: Checking existing images...")
 	if dirExists("products") {
-		dialog.ShowConfirm("Directory Exists",
+		fdialog.ShowConfirm("Directory Exists",
 			`"products" directory already exists. Do you want to delete it and proceed?`,
 			func(b bool) {
 				if b {
@@ -780,7 +760,7 @@ func showError(win fyne.Window, err error) {
 		Title:   "Error",
 		Content: err.Error(),
 	})
-	dialog.ShowError(err, win)
+	fdialog.ShowError(err, win)
 }
 
 func showInfo(win fyne.Window, message string) {
@@ -788,7 +768,7 @@ func showInfo(win fyne.Window, message string) {
 		Title:   "Success",
 		Content: message,
 	})
-	dialog.ShowInformation("Success", message, win)
+	fdialog.ShowInformation("Success", message, win)
 }
 
 func dirExists(dir string) bool {
