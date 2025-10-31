@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -427,8 +428,13 @@ func downloadAndSaveImage(imageURL, brandSEOURL, seoURL, imageType string) (stri
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Referer", "https://www.google.com/") // Simulating a referrer
 
-	// Perform the HTTP request
-	resp, err := globalClient.Do(req)
+	// Perform the HTTP request (allow self-signed/expired certificates)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return relativePath, fmt.Errorf("Failed to execute HTTP request: %v", err)
 	}
