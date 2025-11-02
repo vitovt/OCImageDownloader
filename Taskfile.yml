@@ -168,9 +168,21 @@ tasks:
       - task: build-windows
       - echo "All builds completed successfully!"
 
+  check-gh:
+    desc: Check if gh CLI is installed
+    internal: true
+    silent: true
+    cmds:
+      - |
+        if ! command -v gh &> /dev/null; then
+          echo "Error: 'gh' CLI tool is not installed."
+          echo "Please install it from: https://github.com/cli/cli"
+          exit 1
+        fi
+
   release:
     desc: Create a new GitHub release with the built binaries (requires 'gh' CLI)
-    deps: [build-all]
+    deps: [check-gh, build-all]
     cmds:
       - echo "Creating GitHub release for version {{.VERSION}}..."
       - |
