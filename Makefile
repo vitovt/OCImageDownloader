@@ -36,7 +36,7 @@ VERSION=$(shell \
 OS_NAME=$$(uname -s)
 
 # Define the main Go file
-MAIN_FILE := main.go
+MAIN_FILE := .
 
 # Ensure the OUTPUT_DIR exists
 
@@ -233,3 +233,8 @@ info:
 	@echo "Hint: You can override any variable when running make, e.g.,"
 	@echo "      make build GOARCH=arm64"
 
+# Pure Go CLI binary: no OpenGL, X11, or DISPLAY required.
+.PHONY: build-cli
+build-cli:
+	@mkdir -p $(OUTPUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags headless -trimpath -o $(OUTPUT_DIR)/ocimagedownloader-$(VERSION)-linux-amd64 .

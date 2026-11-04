@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Use the official Go image as the base
-FROM golang:1.20 AS builder
+FROM golang:1.24 AS builder
 
 # Install mingw-w64 for Windows cross-compilation
 RUN apt-get update && apt-get install -y \
@@ -29,7 +29,7 @@ ENV CXX=x86_64-w64-mingw32-g++
 ENV CGO_ENABLED=1
 
 # Build the Go application
-RUN go build -o /app/app.exe main.go
+RUN go build -o /app/app.exe .
 
 # Final stage to extract the binary
 FROM scratch AS export-stage

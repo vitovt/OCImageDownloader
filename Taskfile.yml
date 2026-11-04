@@ -4,7 +4,7 @@ vars:
   APP_NAME:
     sh: grep -E '^module ' go.mod 2>/dev/null | awk '{print $2}' || echo "somegoapp"
   OUTPUT_DIR: bin
-  MAIN_FILE: main.go
+  MAIN_FILE: .
   GOMOD_EXISTS:
     sh: '[ -f go.mod ] && echo "yes" || echo "no"'
   GOARCH:
@@ -237,3 +237,9 @@ tasks:
       - echo ""
       - echo "Hint You can override any variable when running task, e.g.,"
       - echo "      task build GOARCH=arm64"
+
+  build-cli:
+    desc: Build a Linux amd64 CLI without X11 dependencies
+    cmds:
+      - mkdir -p {{.OUTPUT_DIR}}
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags headless -trimpath -o {{.OUTPUT_DIR}}/ocimagedownloader-{{.VERSION}}-linux-amd64 .

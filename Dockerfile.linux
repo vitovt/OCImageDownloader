@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Use the official Go image as the base
-FROM golang:1.20 AS builder
+FROM golang:1.24 AS builder
 
 # Set the working directory
 WORKDIR /app
@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Build the Go application
-RUN go build -o /app/app_linux main.go
+RUN go build -o /app/app_linux .
 
 # Final stage to extract the binary
 FROM scratch AS export-stage
