@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-var Version = "1.1.2"
+var Version = "1.2.0"
 
 var globalClient *http.Client
 

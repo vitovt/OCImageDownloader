@@ -1,3 +1,10 @@
+2026-11-04 v. 1.2.0
+* Add CLI input from CSV/XLSX/ODS and Google Sheets, with complete CSV output
+* Add concurrent downloads, retries, timeout, resume/clean, and atomic image saves
+* Add main-image fallback, JSON reports, format detection, and local verification
+* Add standalone Linux amd64 CLI build without GUI dependencies
+* Open GUI logs only when processing starts
+
 2024-12-18 v. 1.1.1
 * Update and improve logging
 * Fix: Prevent GUI freezing for long texts
